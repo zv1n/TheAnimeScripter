@@ -658,6 +658,13 @@ class WriteBuffer:
     def _buildEncodingCommand(self, outputPixFmt):
         """Build FFmpeg command for encoding"""
         useHwUpload = self._isNvencEncoder() and not self.custom_encoder
+        # Optional external audio/subtitle source (set by the web UI via env).
+        # When the processed video is a video-only "prepped" file, pull the
+        # audio/subs/chapters straight from the original source during THIS
+        # encode instead of a second remux pass. IVTC preserves duration, so
+        # the original audio stays in sync with the processed video.
+        extAudio = os.environ.get("TAS_AUDIO_SOURCE") or ""
+        extAudio = extAudio if extAudio and os.path.exists(extAudio) else None
 
         command = [
             cs.FFMPEGPATH,
@@ -698,7 +705,7 @@ class WriteBuffer:
         # both with ffmpeg exiting 0.
         command.extend(["-i", "pipe:0"])
 
-        if cs.AUDIO:
+        if cs.AUDIO or extAudio:
             command.extend(["-thread_queue_size", "1024"])
             # Only the source input is trimmed, and only to feed audio/subtitles
             # the matching range. Input-side -ss rebases to 0, so the audio lines
@@ -714,7 +721,7 @@ class WriteBuffer:
                     command.extend(["-ss", str(self.inpoint)])
                 if self.outpoint != 0:
                     command.extend(["-to", str(self.outpoint)])
-            command.extend(["-i", self.input])
+            command.extend(["-i", extAudio or self.input])
 
         filterList = self._buildFilterList()
 
@@ -743,7 +750,7 @@ class WriteBuffer:
         else:
             command.extend(self._buildCustomEncoder(filterList, outputPixFmt))
 
-        if cs.AUDIO:
+        if cs.AUDIO or extAudio:
             command.extend(self._buildAudioSettings())
 
         if self.single_image_output:
@@ -758,8 +765,16 @@ class WriteBuffer:
         filterList = []
 
         if self.output_scale_width and self.output_scale_height:
+            # Fit the (super-scaled) frame inside the target box preserving its
+            # aspect ratio, then pad to the exact WxH (letterbox / pillarbox)
+            # rather than stretching. No-op when the AR already matches.
             filterList.append(
-                f"scale={self.output_scale_width}:{self.output_scale_height}:flags=bilinear"
+                f"scale={self.output_scale_width}:{self.output_scale_height}:"
+                f"flags=lanczos:force_original_aspect_ratio=decrease"
+            )
+            filterList.append(
+                f"pad={self.output_scale_width}:{self.output_scale_height}:"
+                f"(ow-iw)/2:(oh-ih)/2"
             )
 
         if self.grayscale:
@@ -858,6 +873,7 @@ class WriteBuffer:
             audioCodec = "aac"
             subCodec = "mov_text"
         audioSettings.extend(["-c:a", audioCodec, "-map", "1:s?", "-c:s", subCodec])
+        audioSettings.extend(["-map_chapters", "1"])
 
         # No -ss/-to here. These land immediately before the output file, so they
         # trimmed the OUTPUT timeline, not the audio: combined with the old

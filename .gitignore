@@ -21,6 +21,18 @@ installer.cfg
 # ffmpeg shared
 ffmpeg_shared/
 
+# --- Bundled portable Python 3.14 runtime + native libs (shipped, not source) ---
+Lib/
+Scripts/
+share/
+python.exe
+pythonw.exe
+python*.zip
+python*._pth
+python.cat
+*.dll
+# (.pyd already covered by *.py[cod]; .dependencyCache.json by *.json; logs by *.log)
+
 # weights folder
 weights/
 

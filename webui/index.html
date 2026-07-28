@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TAS Control</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141922; --panel2:#1b212d; --line:#262d3a;
+    --txt:#e6e9ef; --dim:#8b93a7; --accent:#39d0d8; --accent2:#6c7bff;
+    --ok:#3ddc84; --err:#ff6b6b; --warn:#ffc857; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 80% -10%,#161d2b 0,var(--bg) 55%);
+    color:var(--txt); font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    padding:28px 22px 60px;
+  }
+  header{display:flex;align-items:center;gap:12px;max-width:1080px;margin:0 auto 22px}
+  .logo{width:34px;height:34px;border-radius:9px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    display:grid;place-items:center;font-weight:800;color:#0b0e14}
+  header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .sub{color:var(--dim);font-size:12px}
+  .wrap{max-width:1080px;margin:0 auto;display:grid;gap:20px;
+    grid-template-columns:1fr 1fr}
+  @media(max-width:860px){.wrap{grid-template-columns:1fr}}
+  .opt{text-transform:none;letter-spacing:0;color:var(--dim);opacity:.8}
+  .card{background:linear-gradient(180deg,var(--panel),#11151d);
+    border:1px solid var(--line);border-radius:var(--radius);padding:18px 18px 20px;
+    box-shadow:0 10px 30px rgba(0,0,0,.25)}
+  .card h2{margin:0 0 2px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .card h2 .n{width:20px;height:20px;border-radius:6px;background:var(--panel2);
+    border:1px solid var(--line);display:grid;place-items:center;font-size:11px;color:var(--accent)}
+  .card p.hint{margin:0 0 14px;color:var(--dim);font-size:12px}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+    color:var(--dim);margin:12px 0 5px}
+  select,input[type=text]{width:100%;background:var(--panel2);color:var(--txt);
+    border:1px solid var(--line);border-radius:9px;padding:9px 10px;font-size:13px;outline:none}
+  select:focus,input:focus{border-color:var(--accent)}
+  select[multiple]{height:150px}
+  .row{display:flex;gap:10px}.row>*{flex:1}
+  .btn{margin-top:16px;width:100%;border:0;border-radius:10px;padding:11px;
+    font-size:13px;font-weight:650;cursor:pointer;color:#08131a;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));transition:.15s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
+  .btn.ghost{background:var(--panel2);color:var(--dim);border:1px solid var(--line)}
+  .search{margin-bottom:6px}
+  .progress{margin-top:16px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:11px;padding:13px;display:none}
+  .progress.show{display:block}
+  .bar{height:9px;border-radius:6px;background:#0c1017;overflow:hidden;margin:8px 0}
+  .bar>i{display:block;height:100%;width:0;border-radius:6px;
+    background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s}
+  .pmeta{display:flex;justify-content:space-between;font-size:12px;color:var(--dim)}
+  .pmeta b{color:var(--txt);font-weight:600}
+  .stats{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--dim)}
+  .stats span b{color:var(--accent);font-weight:600}
+  .status{font-size:12px;margin-top:8px}
+  .status.ok{color:var(--ok)}.status.err{color:var(--err);white-space:pre-wrap;
+    font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:120px;overflow:auto}
+  .status.run{color:var(--accent)}
+  .note{color:var(--warn);font-size:11px;margin-top:6px}
+  .foot{max-width:1080px;margin:20px auto 0;color:var(--dim);font-size:11px;text-align:center}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">T</div>
+  <div>
+    <h1>TAS Control</h1>
+    <div class="sub" id="roots">loading…</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- PREPARE -->
+  <section class="card">
+    <h2><span class="n">1</span> Prepare raw MKV</h2>
+    <p class="hint">IVTC + deinterlace + decimate + DAR-correct scale → lossless FFV1
+      (<code>-prepped.mkv</code>).</p>
+    <label>Source video</label>
+    <input class="search" id="rawSearch" type="text" placeholder="filter…">
+    <select id="rawList" size="7"></select>
+    <label>Cadence</label>
+    <select id="cadence">
+      <option value="auto">Auto (detect)</option>
+      <option value="film">Film / telecine (IVTC → 23.976)</option>
+      <option value="progressive">Progressive (no decimate)</option>
+      <option value="interlaced">Interlaced (deinterlace)</option>
+    </select>
+    <button class="btn" id="prepBtn">Prepare</button>
+    <div class="progress" id="prepProg">
+      <div class="pmeta"><span id="prepLabel">—</span><b id="prepPct">0%</b></div>
+      <div class="bar"><i id="prepBar"></i></div>
+      <div class="stats">
+        <span>speed <b id="prepSpeed">–</b></span>
+        <span>fps <b id="prepFps">–</b></span>
+        <span>frame <b id="prepFrame">–</b></span>
+      </div>
+      <div class="status" id="prepStatus"></div>
+    </div>
+  </section>
+
+  <!-- UPSCALE -->
+  <section class="card">
+    <h2><span class="n">2</span> Upscale with TAS</h2>
+    <p class="hint">Run TheAnimeScripter on a prepared MKV with a custom model.</p>
+    <label>Prepared video</label>
+    <input class="search" id="prepSearch" type="text" placeholder="filter…">
+    <select id="prepList" size="5"></select>
+    <label>Audio / subs source <span class="opt">(optional · stream-copied, all tracks)</span></label>
+    <input class="search" id="srcSearch" type="text" placeholder="filter…">
+    <select id="srcList" size="4"></select>
+    <label>Model</label>
+    <select id="modelList"></select>
+    <div class="row">
+      <div><label>Method</label><select id="method"></select></div>
+      <div><label>Factor</label>
+        <select id="factor"><option>2</option><option>3</option><option>4</option></select></div>
+    </div>
+    <div class="row">
+      <div><label>Precision</label>
+        <select id="precision">
+          <option value="fp32">fp32 (custom ONNX)</option>
+          <option value="fp16">fp16 (half)</option>
+        </select></div>
+      <div><label>Encoder</label><select id="encode"></select></div>
+    </div>
+    <label>Output scale</label>
+    <input id="scale" type="text" value="1920x1080" placeholder="blank = factor only">
+    <p class="hint" style="margin:8px 0 0">Working combo: <b>span-directml + fp32 + x265_10bit</b>
+      (~11–12 fps). TensorRT can't build an engine for this SPAN model on the current stack, and
+      <b>nvenc encoders need NVIDIA driver 610+</b> (this box is on 595.97 → they fail silently).</p>
+    <button class="btn" id="upBtn">Run upscale</button>
+    <div class="progress" id="upProg">
+      <div class="pmeta"><span id="upLabel">—</span><b id="upPct">0%</b></div>
+      <div class="bar"><i id="upBar"></i></div>
+      <div class="stats">
+        <span>fps <b id="upFps">–</b></span>
+        <span>eta <b id="upEta">–</b></span>
+        <span>frame <b id="upFrame">–</b></span>
+        <span>elapsed <b id="upElapsed">–</b></span>
+      </div>
+      <div class="note" id="upNote"></div>
+      <div class="status" id="upStatus"></div>
+    </div>
+  </section>
+
+</div>
+
+<div class="foot">Local only · <code>127.0.0.1</code> · close the console window to stop the server</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmtSize = b => b ? (b/1073741824>=1?(b/1073741824).toFixed(2)+' GB':(b/1048576).toFixed(0)+' MB'):'';
+const fmtTime = s => { if(s==null||isNaN(s))return '–'; s=Math.round(s);
+  const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+  return (h?h+':':'')+String(m).padStart(h?2:1,'0')+':'+String(x).padStart(2,'0'); };
+
+let VIDEOS={raw:[],prepared:[]}, MODELS=[];
+
+async function loadAll(){
+  const cfg = await (await fetch('/api/config')).json();
+  $('#roots').textContent = `videos: ${cfg.videoRoot}  ·  models: ${cfg.modelRoot}`;
+  fillSel($('#method'), cfg.methods); fillSel($('#encode'), cfg.encoders);
+  await refreshVideos(); await refreshModels();
+}
+function fillSel(el, arr){ el.innerHTML=''; arr.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o);}); }
+
+async function refreshVideos(){
+  const d = await (await fetch('/api/videos')).json();
+  VIDEOS = d; renderRaw(); renderPrepared(); renderSrc();
+}
+async function refreshModels(){
+  const d = await (await fetch('/api/models')).json();
+  MODELS = d.models;
+  const el=$('#modelList'); el.innerHTML='';
+  MODELS.forEach(m=>{const o=document.createElement('option');o.value=m.path;
+    o.textContent=`${m.name}  (${fmtSize(m.size)})`;el.appendChild(o);});
+}
+function renderList(sel, items, filter){
+  const el=$(sel); el.innerHTML='';
+  items.filter(i=>i.rel.toLowerCase().includes(filter.toLowerCase())).forEach(i=>{
+    const o=document.createElement('option');o.value=i.path;
+    o.textContent=`${i.rel}   ·   ${fmtSize(i.size)}`;el.appendChild(o);});
+}
+const renderRaw = ()=>renderList('#rawList', VIDEOS.raw, $('#rawSearch').value);
+const renderPrepared = ()=>renderList('#prepList', VIDEOS.prepared, $('#prepSearch').value);
+// Audio/subs source list (upscale column). Keeps a persistent "none" option and
+// preserves the current selection across filtering.
+function renderSrc(){
+  const el=$('#srcList'), cur=el.value, q=$('#srcSearch').value.toLowerCase();
+  el.innerHTML='<option value="">— none (video only) —</option>';
+  (VIDEOS.raw||[]).filter(i=>i.rel.toLowerCase().includes(q)).forEach(i=>{
+    const o=document.createElement('option'); o.value=i.path;
+    o.textContent=`${i.rel}   ·   ${fmtSize(i.size)}`; el.appendChild(o);});
+  el.value=cur;
+}
+$('#rawSearch').oninput=renderRaw; $('#prepSearch').oninput=renderPrepared;
+$('#srcSearch').oninput=renderSrc;
+// Picking a prepared video auto-selects its matching source (X-prepped → X).
+$('#prepList').onchange=()=>{
+  const v=$('#prepList').value; if(!v)return;
+  const stem=v.split('/').pop().replace(/-prepped\.mkv$/i,'');
+  const m=[...$('#srcList').options].find(o=>
+    o.value && o.value.split('/').pop().replace(/\.[^.]+$/,'')===stem);
+  if(m) $('#srcList').value=m.value;
+};
+
+// ---- generic SSE progress binding
+function track(jobId, on){
+  const es=new EventSource(`/api/events/${jobId}`);
+  es.onmessage=e=>{ const d=JSON.parse(e.data); on(d);
+    if(d.status==='completed'||d.status==='failed'){es.close();} };
+  es.onerror=()=>{};
+}
+
+// ---- PREPARE
+function renderPrep(d, output){
+  const p=Math.max(0,Math.min(100,d.progress||0));
+  $('#prepBar').style.width=p+'%'; $('#prepPct').textContent=p.toFixed(1)+'%';
+  $('#prepSpeed').textContent=d.speed||'–'; $('#prepFps').textContent=d.fps||'–';
+  $('#prepFrame').textContent=d.frame||'–';
+  const cad = d.cadence?` · cadence: ${d.cadence}`:'';
+  if(d.status==='completed'){ $('#prepBar').style.width='100%';$('#prepPct').textContent='100%';
+    $('#prepStatus').className='status ok';$('#prepStatus').textContent='✓ Prepared'+cad+' → '+(d.output||output);
+    setBusy($('#prepBtn'),false); refreshVideos(); }
+  else if(d.status==='failed'){ prepFail(d.error||'failed'); setBusy($('#prepBtn'),false); }
+  else if(d.status==='detecting'){ $('#prepStatus').className='status run';
+    $('#prepStatus').textContent=d.note||'Detecting cadence…'; setBusy($('#prepBtn'),true); }
+  else { $('#prepStatus').className='status run'; $('#prepStatus').textContent='Processing…'+cad;
+    setBusy($('#prepBtn'),true); }
+}
+function bindPrep(jobId, output){
+  $('#prepProg').classList.add('show');
+  $('#prepLabel').textContent=(output||'').split('/').pop();
+  track(jobId, d=>renderPrep(d, output));
+}
+$('#prepBtn').onclick=async()=>{
+  const input=$('#rawList').value;
+  if(!input){alert('Pick a source video');return;}
+  setBusy($('#prepBtn'),true);
+  $('#prepProg').classList.add('show');
+  $('#prepStatus').className='status run'; $('#prepStatus').textContent='Starting ffmpeg…';
+  const r=await (await fetch('/api/prepare',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({input, cadence:$('#cadence').value})})).json();
+  if(r.error){ prepFail(r.error); setBusy($('#prepBtn'),false); return; }
+  bindPrep(r.job_id, r.output);
+};
+function prepFail(m){ $('#prepStatus').className='status err'; $('#prepStatus').textContent='✗ '+m; }
+
+// ---- UPSCALE
+function renderUp(d, output){
+  const p=Math.max(0,Math.min(100,d.progress||0));
+  $('#upBar').style.width=p+'%'; $('#upPct').textContent=p.toFixed(1)+'%';
+  $('#upFps').textContent=d.fps!=null?Number(d.fps).toFixed(1):'–';
+  $('#upEta').textContent=fmtTime(d.eta);
+  $('#upElapsed').textContent=fmtTime(d.elapsed);
+  $('#upFrame').textContent=(d.currentFrame!=null&&d.totalFrames!=null)?`${d.currentFrame}/${d.totalFrames}`:'–';
+  $('#upNote').textContent=d.note||'';
+  if(d.status==='completed'){ $('#upBar').style.width='100%';$('#upPct').textContent='100%';
+    $('#upStatus').className='status ok';$('#upStatus').textContent='✓ Done → '+(d.output||output);
+    $('#upNote').textContent=''; setBusy($('#upBtn'),false); refreshVideos(); }
+  else if(d.status==='failed'){ upFail(d.error||'failed'); setBusy($('#upBtn'),false); }
+  else { $('#upStatus').className='status run';
+    $('#upStatus').textContent=d.status==='initializing'?'Initializing…':'Processing…';
+    setBusy($('#upBtn'),true); }
+}
+function bindUp(jobId, output){
+  $('#upProg').classList.add('show');
+  $('#upLabel').textContent=(output||'').split('/').pop();
+  track(jobId, d=>renderUp(d, output));
+}
+$('#upBtn').onclick=async()=>{
+  const input=$('#prepList').value, model=$('#modelList').value;
+  if(!input){alert('Pick a prepared video');return;}
+  if(!model){alert('Pick a model');return;}
+  setBusy($('#upBtn'),true);
+  $('#upProg').classList.add('show');
+  $('#upStatus').className='status run'; $('#upStatus').textContent='Launching TAS…';
+  $('#upNote').textContent='';
+  const payload={input,model,method:$('#method').value,factor:$('#factor').value,
+    scale:$('#scale').value,encode:$('#encode').value,
+    half:$('#precision').value==='fp16',
+    audio_source:$('#srcList').value||''};
+  const r=await (await fetch('/api/upscale',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)})).json();
+  if(r.error){ upFail(r.error); setBusy($('#upBtn'),false); return; }
+  bindUp(r.job_id, r.output);
+};
+function upFail(m){ $('#upStatus').className='status err'; $('#upStatus').textContent='✗ '+m; }
+
+function setBusy(btn,b){ btn.disabled=b;
+  btn.textContent=b?'Working…':(btn===$('#prepBtn')?'Prepare':'Run upscale'); }
+
+// Rebind to any in-flight (or last) job after a page refresh — server keeps state.
+async function restoreState(){
+  try{
+    const st=await (await fetch('/api/state')).json();
+    if(st.prep){ bindPrep(st.prep.job_id, st.prep.output); }
+    if(st.tas){ bindUp(st.tas.job_id, st.tas.output); }
+  }catch(e){}
+}
+
+loadAll().then(restoreState);
+</script>
+</body>
+</html>
