@@ -164,7 +164,7 @@
     <label>Output scale</label>
     <input id="scale" type="text" value="1920x1080" placeholder="blank = factor only">
     <p class="hint" style="margin:8px 0 0">Working combo: <b>span-directml + fp32 + nvenc_h264</b>
-      (h264 nvenc @ CQ 20). TensorRT can't build an engine for this SPAN model on the current stack.
+      (h264 nvenc, preset p7 @ CQ 20, archival quality). TensorRT can't build an engine for this SPAN model on the current stack.
       <b>x265_10bit</b> is the software fallback. <b>h265/HEVC nvenc needs driver 610+</b> and fails
       silently on this box (595.97) — h264 nvenc works.</p>
     <button class="btn" id="upBtn">Run upscale</button>
