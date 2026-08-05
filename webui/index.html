@@ -23,6 +23,11 @@
     display:grid;place-items:center;font-weight:800;color:#0b0e14}
   header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
   header .sub{color:var(--dim);font-size:12px}
+  .refresh{margin-left:auto;background:var(--panel2);color:var(--txt);
+    border:1px solid var(--line);border-radius:9px;padding:9px 15px;font-size:12px;
+    font-weight:600;cursor:pointer;transition:.15s;white-space:nowrap}
+  .refresh:hover{border-color:var(--accent);color:var(--accent)}
+  .refresh:disabled{opacity:.5;cursor:default}
   .wrap{max-width:1080px;margin:0 auto;display:grid;gap:20px;
     grid-template-columns:1fr 1fr}
   @media(max-width:860px){.wrap{grid-template-columns:1fr}}
@@ -63,6 +68,24 @@
     font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:120px;overflow:auto}
   .status.run{color:var(--accent)}
   .note{color:var(--warn);font-size:11px;margin-top:6px}
+  .compare{margin-top:10px;font-size:11px}
+  .compare .cmp-h,.compare .cmp-r{display:grid;grid-template-columns:1.5fr 1fr 1fr;
+    gap:6px;padding:3px 0;align-items:baseline}
+  .compare .cmp-h{color:var(--dim);text-transform:uppercase;letter-spacing:.5px;
+    font-size:9.5px;border-bottom:1px solid var(--line);margin-bottom:2px}
+  .compare .cmp-r{border-bottom:1px solid rgba(255,255,255,.04)}
+  .compare .cmp-r b{font-weight:600}
+  .compare .cmp-r.ok b{color:var(--ok)}
+  .compare .cmp-r.bad{color:var(--err)} .compare .cmp-r.bad b{color:var(--err)}
+  .compare .cmp-r.info b{color:var(--dim)}
+  .compare .cmp-mismatch{color:var(--err);font-weight:600;margin:6px 0 2px}
+  .compare .cmp-allok{color:var(--ok);margin:6px 0 2px}
+  .detect{font-size:11px;line-height:1.6;color:var(--dim);margin-top:8px}
+  .detect:empty{display:none}
+  .detect b{color:var(--accent);font-weight:650}
+  .detect .dim{color:var(--dim)} .detect .bad{color:var(--err)}
+  .detect code{background:var(--panel2);padding:1px 5px;border-radius:4px;
+    font-size:10px;word-break:break-all}
   .foot{max-width:1080px;margin:20px auto 0;color:var(--dim);font-size:11px;text-align:center}
   code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:11px}
 </style>
@@ -74,6 +97,7 @@
     <h1>TAS Control</h1>
     <div class="sub" id="roots">loading…</div>
   </div>
+  <button class="refresh" id="refreshBtn" title="Rescan videos & models from disk">↻ Refresh files</button>
 </header>
 
 <div class="wrap">
@@ -88,10 +112,16 @@
     <label>Cadence</label>
     <select id="cadence">
       <option value="auto">Auto (detect)</option>
-      <option value="film">Film / telecine (IVTC → 23.976)</option>
-      <option value="progressive">Progressive (no decimate)</option>
+      <option value="film24">Film 24p / soft telecine → CFR 23.976</option>
+      <option value="telecine">Hard telecine (IVTC → 23.976)</option>
+      <option value="progressive">Progressive (keep fps, CFR)</option>
       <option value="interlaced">Interlaced (deinterlace)</option>
     </select>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="detectBtn">↯ Detect cadence</button>
+      <button class="btn ghost" id="verifyBtn" title="Re-check an existing -prepped file vs its source">✓ Verify prepped</button>
+    </div>
+    <div class="detect" id="prepDetect"></div>
     <button class="btn" id="prepBtn">Prepare</button>
     <div class="progress" id="prepProg">
       <div class="pmeta"><span id="prepLabel">—</span><b id="prepPct">0%</b></div>
@@ -102,6 +132,7 @@
         <span>frame <b id="prepFrame">–</b></span>
       </div>
       <div class="status" id="prepStatus"></div>
+      <div class="compare" id="prepCompare"></div>
     </div>
   </section>
 
@@ -183,10 +214,11 @@ async function refreshModels(){
     o.textContent=`${m.name}  (${fmtSize(m.size)})`;el.appendChild(o);});
 }
 function renderList(sel, items, filter){
-  const el=$(sel); el.innerHTML='';
+  const el=$(sel); const cur=el.value; el.innerHTML='';
   items.filter(i=>i.rel.toLowerCase().includes(filter.toLowerCase())).forEach(i=>{
     const o=document.createElement('option');o.value=i.path;
     o.textContent=`${i.rel}   ·   ${fmtSize(i.size)}`;el.appendChild(o);});
+  el.value=cur;  // keep selection across refresh/filter when still present
 }
 const renderRaw = ()=>renderList('#rawList', VIDEOS.raw, $('#rawSearch').value);
 const renderPrepared = ()=>renderList('#prepList', VIDEOS.prepared, $('#prepSearch').value);
@@ -220,31 +252,84 @@ function track(jobId, on){
 }
 
 // ---- PREPARE
+function renderCompare(cmp){
+  const el=$('#prepCompare');
+  if(!cmp||!cmp.rows){ el.innerHTML=''; return; }
+  const head = cmp.allOk
+    ? '<div class="cmp-allok">✓ Output matches source (duration, frames, rate, aspect)</div>'
+    : '<div class="cmp-mismatch">⚠ Mismatch vs source — check flagged rows</div>';
+  const rows = cmp.rows.map(r=>{
+    const cls = r.ok===true?'ok':r.ok===false?'bad':'info';
+    const mark = r.ok===true?'✓':r.ok===false?'✗':'·';
+    return `<div class="cmp-r ${cls}"><span>${mark} ${r.label}</span>`+
+           `<b>${r.src}</b><b>${r.out}</b></div>`;
+  }).join('');
+  el.innerHTML = head +
+    '<div class="cmp-h"><span>check</span><span>source</span><span>prepped</span></div>' + rows;
+}
 function renderPrep(d, output){
   const p=Math.max(0,Math.min(100,d.progress||0));
   $('#prepBar').style.width=p+'%'; $('#prepPct').textContent=p.toFixed(1)+'%';
   $('#prepSpeed').textContent=d.speed||'–'; $('#prepFps').textContent=d.fps||'–';
   $('#prepFrame').textContent=d.frame||'–';
   const cad = d.cadence?` · cadence: ${d.cadence}`:'';
+  const verb = d.verifyOnly?'Verified':'Prepared';
   if(d.status==='completed'){ $('#prepBar').style.width='100%';$('#prepPct').textContent='100%';
-    $('#prepStatus').className='status ok';$('#prepStatus').textContent='✓ Prepared'+cad+' → '+(d.output||output);
-    setBusy($('#prepBtn'),false); refreshVideos(); }
-  else if(d.status==='failed'){ prepFail(d.error||'failed'); setBusy($('#prepBtn'),false); }
+    $('#prepStatus').className='status ok';$('#prepStatus').textContent='✓ '+verb+cad+' → '+(d.output||output);
+    renderCompare(d.compare); setBusy($('#prepBtn'),false); refreshVideos(); }
+  else if(d.status==='failed'){ prepFail(d.error||'failed'); renderCompare(null); setBusy($('#prepBtn'),false); }
   else if(d.status==='detecting'){ $('#prepStatus').className='status run';
-    $('#prepStatus').textContent=d.note||'Detecting cadence…'; setBusy($('#prepBtn'),true); }
+    $('#prepStatus').textContent=d.note||'Detecting cadence…'; renderCompare(null); setBusy($('#prepBtn'),true); }
+  else if(d.status==='comparing'){ $('#prepStatus').className='status run';
+    $('#prepStatus').textContent=d.note||'Verifying output…'; setBusy($('#prepBtn'),true); }
   else { $('#prepStatus').className='status run'; $('#prepStatus').textContent='Processing…'+cad;
-    setBusy($('#prepBtn'),true); }
+    renderCompare(null); setBusy($('#prepBtn'),true); }
 }
 function bindPrep(jobId, output){
   $('#prepProg').classList.add('show');
   $('#prepLabel').textContent=(output||'').split('/').pop();
   track(jobId, d=>renderPrep(d, output));
 }
+// Inspect cadence BEFORE committing to a long prepare.
+$('#detectBtn').onclick=async()=>{
+  const input=$('#rawList').value;
+  if(!input){alert('Pick a source video');return;}
+  const b=$('#detectBtn'), t=b.textContent; b.disabled=true; b.textContent='Detecting…';
+  $('#prepDetect').innerHTML='';
+  try{
+    const r=await (await fetch('/api/detect',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({input})})).json();
+    if(r.error){ $('#prepDetect').innerHTML=`<span class="bad">✗ ${r.error}</span>`; return; }
+    $('#cadence').value=r.cadence;   // pre-select what auto would pick
+    const s=r.source||{};
+    const rateTag = r.plan.rate!=='(native fps)'?` <code>${r.plan.rate}</code>`:'';
+    $('#prepDetect').innerHTML =
+      `<b>→ ${r.cadence}</b> <span class="dim">${r.why}</span><br>`+
+      `source: ${s.containerFps??'?'} fps label · <b>decoded ${r.decodedFps??'?'} fps</b> · `+
+      `${s.width||'?'}×${s.height||'?'} · ${fmtTime(s.duration)}<br>`+
+      `idet: ${r.progressive} prog / ${r.interlaced} int / ${r.repeatedFields} rep-fields `+
+      `(of ${r.sampleFrames})<br>`+
+      `plan: <code>-vf ${r.plan.vf}</code>${rateTag}`;
+  }catch(e){ $('#prepDetect').innerHTML=`<span class="bad">✗ ${e}</span>`; }
+  finally{ b.textContent=t; b.disabled=false; }
+};
+// Re-validate an existing -prepped file vs its source (no re-encode).
+$('#verifyBtn').onclick=async()=>{
+  const input=$('#rawList').value;
+  if(!input){alert('Pick the source video whose -prepped file to verify');return;}
+  setBusy($('#prepBtn'),true);
+  $('#prepProg').classList.add('show'); renderCompare(null);
+  $('#prepStatus').className='status run'; $('#prepStatus').textContent='Verifying…';
+  const r=await (await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({input})})).json();
+  if(r.error){ prepFail(r.error); setBusy($('#prepBtn'),false); return; }
+  bindPrep(r.job_id, r.output);
+};
 $('#prepBtn').onclick=async()=>{
   const input=$('#rawList').value;
   if(!input){alert('Pick a source video');return;}
   setBusy($('#prepBtn'),true);
-  $('#prepProg').classList.add('show');
+  $('#prepProg').classList.add('show'); renderCompare(null);
   $('#prepStatus').className='status run'; $('#prepStatus').textContent='Starting ffmpeg…';
   const r=await (await fetch('/api/prepare',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({input, cadence:$('#cadence').value})})).json();
@@ -305,6 +390,13 @@ async function restoreState(){
     if(st.tas){ bindUp(st.tas.job_id, st.tas.output); }
   }catch(e){}
 }
+
+// Manual rescan of videos + models (no server restart / page reload needed).
+$('#refreshBtn').onclick=async()=>{
+  const b=$('#refreshBtn'), t=b.textContent; b.disabled=true; b.textContent='Refreshing…';
+  try{ await refreshVideos(); await refreshModels(); }
+  finally{ b.textContent=t; b.disabled=false; }
+};
 
 loadAll().then(restoreState);
 </script>

@@ -144,50 +144,112 @@ def _parse_out_time(cur):
 
 # DAR-correct, square-pixel scale shared by every cadence path.
 _SCALE = "scale='trunc(ih*dar/2)*2:ih':flags=lanczos,setsar=1"
-CADENCES = ("auto", "film", "progressive", "interlaced")
+CADENCES = ("auto", "film24", "telecine", "progressive", "interlaced")
 
 
-def _prep_vf(cadence):
-    """Video-filter chain for a given cadence."""
-    if cadence == "film":       # 3:2-telecined film → inverse telecine to 23.976
-        return f"fieldmatch,yadif=deint=interlaced,decimate,{_SCALE}"
-    if cadence == "interlaced":  # true interlaced video → deinterlace, keep fps
-        return f"yadif,{_SCALE}"
-    return _SCALE                # progressive → no field/rate changes
+def _prep_plan(cadence):
+    """Return (video_filter, [extra output args]) for a cadence.
+
+    Every path pins CFR so the source's pulldown/VFR timing can't leak through
+    and cause judder downstream — the failure mode where 24p frames carried at
+    29.97 pulldown timing get spaced 33/50/33ms instead of a clean 41.7ms.
+    """
+    if cadence == "telecine":    # hard 3:2 pulldown baked into 29.97 frames
+        return (f"fieldmatch,yadif=deint=interlaced,decimate,{_SCALE}", [])
+    if cadence == "film24":      # 24p film / soft telecine → clean CFR 23.976
+        return (_SCALE, ["-fps_mode", "cfr", "-r", "24000/1001"])
+    if cadence == "interlaced":  # true interlaced video → deinterlace, keep rate
+        return (f"yadif,{_SCALE}", ["-fps_mode", "cfr"])
+    return (_SCALE, ["-fps_mode", "cfr"])   # progressive → native rate, CFR
 
 
 def _detect_cadence(path):
-    """Sniff cadence with idet on a mid-file sample. Returns film/progressive/
-    interlaced. Repeated fields ⇒ telecine; else interlaced-heavy ⇒ interlaced."""
+    """Classify cadence from a mid-file sample.
+
+    Key signal: the effective *decoded* frame rate. 24p film (native or soft
+    telecine) decodes at ~24fps even when the container is labelled 29.97, so
+    it must be pinned to CFR 23.976 rather than decimated. Hard 3:2 telecine
+    decodes at ~30fps with repeated fields; true interlaced shows TFF/BFF.
+    """
     dur = _probe_duration(path) or 0
     ss = max(0, dur * 0.4)
-    cmd = [FFMPEG, "-hide_banner", "-ss", str(ss), "-i", path,
-           "-vf", "idet", "-frames:v", "500", "-an", "-f", "null", "-"]
+
+    eff = None
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180).stderr
+        err = subprocess.run(
+            [FFMPEG, "-hide_banner", "-ss", str(ss), "-i", path, "-t", "8",
+             "-an", "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120).stderr
+        m = re.findall(r"frame=\s*(\d+)", err)
+        if m:
+            eff = int(m[-1]) / 8.0
     except Exception:
-        return "progressive"
+        pass
 
-    def line(label):
-        for ln in out.splitlines():
-            if label in ln:
-                return ln
-        return ""
+    tff = bff = prog = repeated = 0
+    try:
+        out = subprocess.run(
+            [FFMPEG, "-hide_banner", "-ss", str(ss), "-i", path, "-vf", "idet",
+             "-frames:v", "400", "-an", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=180).stderr
 
-    def num(s, key):
-        m = re.search(key + r":\s*(\d+)", s)
-        return int(m.group(1)) if m else 0
+        def line(label):
+            for ln in out.splitlines():
+                if label in ln:
+                    return ln
+            return ""
 
-    ml = line("Multi frame detection")
-    rf = line("Repeated Fields")
-    tff, bff, prog = num(ml, "TFF"), num(ml, "BFF"), num(ml, "Progressive")
-    repeated = num(rf, "Top") + num(rf, "Bottom")
+        def num(s, key):
+            m = re.search(key + r":\s*(\d+)", s)
+            return int(m.group(1)) if m else 0
+
+        ml = line("Multi frame detection")
+        rf = line("Repeated Fields")
+        tff, bff, prog = num(ml, "TFF"), num(ml, "BFF"), num(ml, "Progressive")
+        repeated = num(rf, "Top") + num(rf, "Bottom")
+    except Exception:
+        pass
+
     total = max(1, tff + bff + prog)
-    if repeated / total > 0.05:      # 3:2 pulldown leaves ~1/5 repeated fields
-        return "film"
-    if (tff + bff) / total > 0.10:
-        return "interlaced"
-    return "progressive"
+    if eff is not None and eff < 26:     # ~24fps decode ⇒ 24p film / soft telecine
+        cadence, why = "film24", f"decoded {eff:.2f} fps ⇒ 24p film / soft telecine"
+    elif repeated / total > 0.05:        # 3:2 pulldown leaves repeated fields
+        cadence, why = "telecine", "repeated fields ⇒ hard 3:2 telecine"
+    elif (tff + bff) / total > 0.10:
+        cadence, why = "interlaced", "TFF/BFF fields ⇒ interlaced video"
+    else:
+        cadence, why = "progressive", "progressive, ~30 fps"
+    return {
+        "cadence": cadence, "why": why,
+        "decodedFps": round(eff, 3) if eff is not None else None,
+        "progressive": prog, "interlaced": tff + bff,
+        "repeatedFields": repeated, "sampleFrames": total,
+    }
+
+
+def _measure_timing(path, n=48):
+    """Sample frame PTS mid-file and report whether spacing is constant (CFR).
+    This is the direct 'is the timing ACTUALLY correct' check — a VFR/pulldown
+    leak shows up here as mixed 33/50/66 ms deltas."""
+    dur = _probe_duration(path) or 0
+    ss = max(0, dur * 0.4)
+    try:
+        out = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0",
+             "-read_intervals", f"{ss}%+#{n}",
+             "-show_entries", "frame=pts_time", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=90).stdout
+        ts = sorted(float(x) for x in re.findall(r"\d+\.\d+", out))
+        deltas = [round(ts[i + 1] - ts[i], 4)
+                  for i in range(len(ts) - 1) if ts[i + 1] > ts[i]]
+        if len(deltas) < 6:
+            return None
+        deltas.sort()
+        lo, hi, med = deltas[0], deltas[-1], deltas[len(deltas) // 2]
+        return {"cfr": (hi - lo) <= 0.004, "minDelta": lo, "maxDelta": hi,
+                "fps": round(1.0 / med, 3) if med > 0 else None}
+    except Exception:
+        return None
 
 
 def start_prepare(input_path, cadence="auto"):
@@ -200,27 +262,199 @@ def start_prepare(input_path, cadence="auto"):
     return job
 
 
+def _fps_to_float(s):
+    try:
+        if s and "/" in s:
+            a, b = s.split("/")
+            return round(int(a) / int(b), 3) if int(b) else None
+        return round(float(s), 3) if s else None
+    except Exception:
+        return None
+
+
+def _probe_video(path):
+    """Duration, fps, resolution, SAR/DAR (fast) + exact frame count (slow:
+    counts packets, which reads the whole index)."""
+    info = {"duration": None, "fps": None, "width": None, "height": None,
+            "sar": None, "dar": None, "frames": None}
+    try:
+        r = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=r_frame_rate,avg_frame_rate,width,height,"
+             "sample_aspect_ratio,display_aspect_ratio",
+             "-show_entries", "format=duration", "-of", "json", path],
+            capture_output=True, text=True, timeout=60)
+        d = json.loads(r.stdout)
+        st = (d.get("streams") or [{}])[0]
+        fmt = d.get("format") or {}
+        info["width"], info["height"] = st.get("width"), st.get("height")
+        info["sar"] = st.get("sample_aspect_ratio")
+        info["dar"] = st.get("display_aspect_ratio")
+        info["duration"] = float(fmt["duration"]) if fmt.get("duration") else None
+        info["fps"] = _fps_to_float(st.get("avg_frame_rate") or st.get("r_frame_rate"))
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0", "-count_packets",
+             "-show_entries", "stream=nb_read_packets",
+             "-of", "default=nk=1:nw=1", path],
+            capture_output=True, text=True, timeout=1800)
+        info["frames"] = int(r.stdout.strip())
+    except Exception:
+        pass
+    return info
+
+
+def _probe_meta(path):
+    """Fast container metadata (no frame counting) for the detect preview."""
+    try:
+        r = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=r_frame_rate,width,height,display_aspect_ratio",
+             "-show_entries", "format=duration", "-of", "json", path],
+            capture_output=True, text=True, timeout=30)
+        d = json.loads(r.stdout)
+        st = (d.get("streams") or [{}])[0]
+        fmt = d.get("format") or {}
+        return {"containerFps": _fps_to_float(st.get("r_frame_rate")),
+                "width": st.get("width"), "height": st.get("height"),
+                "dar": st.get("display_aspect_ratio"),
+                "duration": float(fmt["duration"]) if fmt.get("duration") else None}
+    except Exception:
+        return {}
+
+
+def _compare_source_output(src, out, cadence="auto"):
+    """Row list comparing source vs prepared for the UI. ok=True (match),
+    False (mismatch → flag), None (informational, expected to differ).
+
+    Frame rate is compared as the EFFECTIVE rate (frames÷duration), not the
+    container label — soft-telecine sources are mislabelled 29.97 while really
+    24p, so the label would false-alarm. The output is also checked for CFR
+    consistency (label ≈ effective): that's exactly what a VFR/pulldown-timing
+    leak fails (frames tagged 29.97 but spaced for 23.976 → judder)."""
+    s, o = _probe_video(src), _probe_video(out)
+
+    def effrate(i):
+        return (i["frames"] / i["duration"]) \
+            if (i["frames"] and i["duration"]) else None
+
+    se, oe = effrate(s), effrate(o)
+
+    def dur(v):
+        return f"{v:.2f} s" if isinstance(v, (int, float)) else "—"
+
+    def rate(v):
+        return f"{v:.3f}" if isinstance(v, (int, float)) else "—"
+
+    def res(i):
+        return f'{i["width"]}x{i["height"]}' if i["width"] else "—"
+
+    dur_ok = bool(s["duration"] and o["duration"]
+                  and abs(s["duration"] - o["duration"]) <= 0.5)
+    # frame count only expected to match when we're not decimating (telecine).
+    # CFR retiming can legitimately shift a couple of frames at the boundaries,
+    # so allow a small tolerance (still catches gross loss like decimate's ~20%).
+    ftol = max(4, round(0.5 * (oe or 24)))
+    frames_match = s["frames"] is not None and o["frames"] is not None \
+        and abs(s["frames"] - o["frames"]) <= ftol
+    frames_check = None if cadence == "telecine" else frames_match
+    rate_match = bool(se and oe and abs(se - oe) / se < 0.02)
+    cfr_ok = bool(oe and o["fps"] and abs(oe - o["fps"]) / oe < 0.02)
+    rate_ok = rate_match and cfr_ok
+    dar_ok = bool(s["dar"] and o["dar"] and s["dar"] == o["dar"])
+
+    # Direct proof the OUTPUT timing is actually constant (not just inferred).
+    ts, to = _measure_timing(src), _measure_timing(out)
+    timing_ok = bool(to and to["cfr"])
+
+    def timing_disp(t):
+        if not t:
+            return "—"
+        if t["cfr"]:
+            return f"constant {t['maxDelta'] * 1000:.0f}ms"
+        return f"VFR {t['minDelta'] * 1000:.0f}–{t['maxDelta'] * 1000:.0f}ms"
+
+    out_rate = rate(oe) + ("" if cfr_ok else f" ⚠tagged {rate(o['fps'])}")
+    rows = [
+        {"label": "Duration", "src": dur(s["duration"]), "out": dur(o["duration"]),
+         "ok": dur_ok},
+        {"label": "Frames",
+         "src": s["frames"] if s["frames"] is not None else "—",
+         "out": o["frames"] if o["frames"] is not None else "—",
+         "ok": frames_check},
+        {"label": "Frame rate", "src": rate(se), "out": out_rate, "ok": rate_ok},
+        {"label": "Timing", "src": timing_disp(ts), "out": timing_disp(to),
+         "ok": timing_ok},
+        {"label": "Aspect (DAR)", "src": s["dar"] or "—", "out": o["dar"] or "—",
+         "ok": dar_ok},
+        {"label": "Resolution", "src": res(s), "out": res(o), "ok": None},
+    ]
+    all_ok = dur_ok and rate_ok and timing_ok and dar_ok \
+        and frames_check is not False
+    return {"rows": rows, "allOk": all_ok}
+
+
 def _run_prepare(job, input_path, output, cadence):
     duration = _probe_duration(input_path)
+    detect = None
     if cadence == "auto":
         job.update({"status": "detecting", "input": input_path, "output": output,
                     "totalDuration": duration, "progress": 0.0,
-                    "note": "Detecting cadence (idet)…"})
-        cadence = _detect_cadence(input_path)
+                    "note": "Detecting cadence…"})
+        detect = _detect_cadence(input_path)
+        cadence = detect["cadence"]
     job.update({"status": "processing", "input": input_path, "output": output,
                 "totalDuration": duration, "progress": 0.0, "cadence": cadence,
-                "note": None})
+                "detect": detect, "note": None})
+    vf, rate_args = _prep_plan(cadence)
     cmd = [
         FFMPEG, "-y", "-hide_banner", "-i", input_path,
-        "-map", "0:v:0", "-vf", _prep_vf(cadence),
+        "-map", "0:v:0", "-vf", vf, *rate_args,
         "-c:v", "ffv1", "-level", "3", "-g", "1", "-slicecrc", "1",
         "-progress", "pipe:1", "-nostats", output,
     ]
-    _run_ffmpeg_with_progress(job, cmd, output, duration)
+
+    def _verify():
+        job.update({"status": "comparing", "progress": 100.0,
+                    "note": "Verifying output vs source (counting frames)…"})
+        return {"compare": _compare_source_output(input_path, output, cadence)}
+
+    _run_ffmpeg_with_progress(job, cmd, output, duration, on_success=_verify)
 
 
-def _run_ffmpeg_with_progress(job, cmd, output, duration):
-    """Run an ffmpeg command, streaming -progress into the job snapshot."""
+def start_verify(source, output):
+    """Re-run the source-vs-output comparison on an already-prepared file,
+    with no re-encode. Reuses the 'prep' slot so the UI renders it identically."""
+    job = _new_job("prep", output)
+
+    def run():
+        duration = _probe_duration(source)
+        job.update({"status": "detecting", "input": source, "output": output,
+                    "totalDuration": duration, "progress": 100.0,
+                    "note": "Detecting cadence…", "verifyOnly": True})
+        cadence = _detect_cadence(source)["cadence"]
+        job.update({"status": "comparing", "cadence": cadence, "progress": 100.0,
+                    "note": "Verifying output vs source (counting frames)…"})
+        try:
+            cmp = _compare_source_output(source, output, cadence)
+            job.update({"status": "completed", "progress": 100.0, "compare": cmp})
+        except Exception as e:
+            job.update({"status": "failed", "error": str(e)})
+        job.done = True
+
+    threading.Thread(target=run, daemon=True).start()
+    return job
+
+
+def _run_ffmpeg_with_progress(job, cmd, output, duration, on_success=None):
+    """Run an ffmpeg command, streaming -progress into the job snapshot.
+
+    on_success: optional callable run after a clean exit; whatever dict it
+    returns is merged into the terminal 'completed' snapshot (used to attach a
+    source-vs-output comparison). It may emit its own interim status updates.
+    """
     try:
         job.proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -259,8 +493,14 @@ def _run_ffmpeg_with_progress(job, cmd, output, duration):
     rc = job.proc.wait()
     ok = rc == 0 and os.path.exists(output) and os.path.getsize(output) > 0
     if ok:
+        extra = {}
+        if on_success:
+            try:
+                extra = on_success() or {}
+            except Exception as e:
+                extra = {"compareError": str(e)}
         job.update({"status": "completed", "progress": 100.0,
-                    "size": os.path.getsize(output)})
+                    "size": os.path.getsize(output), **extra})
     else:
         job.update({"status": "failed", "progress": job.last.get("progress", 0.0),
                     "error": "\n".join(job.log[-12:]) or f"ffmpeg exit {rc}"})
@@ -495,6 +735,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         data = self._body()
+        if path == "/api/verify":
+            inp = data.get("input")
+            if not inp or not os.path.exists(inp):
+                return self._json({"error": "input not found"}, 400)
+            base, _ = os.path.splitext(inp)
+            output = base + "-prepped.mkv"
+            if not os.path.exists(output):
+                return self._json(
+                    {"error": "no -prepped file exists for this source yet"}, 400)
+            job = start_verify(inp, output)
+            return self._json({"job_id": job.id, "output": output})
+        if path == "/api/detect":
+            inp = data.get("input")
+            if not inp or not os.path.exists(inp):
+                return self._json({"error": "input not found"}, 400)
+            det = _detect_cadence(inp)
+            vf, rate = _prep_plan(det["cadence"])
+            det["plan"] = {"vf": vf, "rate": " ".join(rate) or "(native fps)"}
+            det["source"] = _probe_meta(inp)
+            return self._json(det)
         if path == "/api/prepare":
             inp = data.get("input")
             if not inp or not os.path.exists(inp):
