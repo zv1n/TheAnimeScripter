@@ -122,7 +122,7 @@ def matchEncoder(encode_method: str):
                 ]
             )
         case "nvenc_h264":
-            command.extend(["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "15"])
+            command.extend(["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "20"])
         case "slow_nvenc_h264":
             command.extend(
                 [

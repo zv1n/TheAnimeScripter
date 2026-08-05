@@ -80,12 +80,14 @@ UPSCALE_METHODS = [
     "open-proteus-tensorrt", "aniscale2-tensorrt", "rtmosr-tensorrt",
     "adore-tensorrt", "shufflespan-tensorrt",
 ]
-# Software encoders first = default. nvenc_* need NVIDIA driver 610+ (this box is
-# on 595.97 → nvenc fails to open and TAS pipes into a dead encoder for the whole
-# run before reporting "0 bytes"). x265_10bit is software and always works.
+# nvenc_h264 first = default (h264_nvenc, CQ 20 in encodingSettings). h264 nvenc
+# works on this box's driver (supported since the 440 series). The h265/HEVC nvenc
+# paths need a newer driver (610+) and fail to open here — TAS then pipes into a
+# dead encoder for the whole run before reporting "0 bytes". x265_10bit is the
+# software fallback and always works.
 ENCODE_METHODS = [
-    "x265_10bit", "x265", "x264", "prores",
-    "nvenc_h265_10bit", "nvenc_h265", "nvenc_h264", "nvenc_av1",
+    "nvenc_h264", "x265_10bit", "x265", "x264", "prores",
+    "nvenc_h265_10bit", "nvenc_h265", "nvenc_av1",
 ]
 
 # ---------------------------------------------------------------- job registry
@@ -821,7 +823,7 @@ class Handler(BaseHTTPRequestHandler):
                 data.get("method", "span-directml"),
                 int(data.get("factor", 2)),
                 (data.get("scale") or "").strip(),
-                data.get("encode", "x265_10bit"),
+                data.get("encode", "nvenc_h264"),
                 bool(data.get("half", False)),
                 src or None,
             )
