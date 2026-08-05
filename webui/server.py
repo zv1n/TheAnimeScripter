@@ -390,7 +390,22 @@ def _compare_source_output(src, out, cadence="auto"):
     rate_match = bool(se and oe and abs(se - oe) / se < 0.02)
     cfr_ok = bool(oe and o["fps"] and abs(oe - o["fps"]) / oe < 0.02)
     rate_ok = rate_match and cfr_ok
-    dar_ok = bool(s["dar"] and o["dar"] and s["dar"] == o["dar"])
+
+    def dar_ratio(v):
+        # Accept "a:b", "a/b", or a plain float string; return the ratio.
+        try:
+            if isinstance(v, str) and (":" in v or "/" in v):
+                a, b = re.split(r"[:/]", v, maxsplit=1)
+                return float(a) / float(b) if float(b) else None
+            return float(v)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    # Even-width rounding in the scale filter (trunc(ih*dar/2)*2) shifts DAR by
+    # <1px of width (e.g. 853:480 → 852:480). Compare numerically with a 1%
+    # tolerance: forgives that rounding, still catches 4:3-vs-16:9 (~33% off).
+    sd, od = dar_ratio(s["dar"]), dar_ratio(o["dar"])
+    dar_ok = bool(sd and od and abs(sd - od) / sd < 0.01)
 
     # Direct proof the OUTPUT timing is actually constant (not just inferred).
     ts, to = _measure_timing(src), _measure_timing(out)
