@@ -39,10 +39,37 @@ def _detect_root(candidates):
     return os.path.abspath(candidates[0])
 
 
-VIDEO_ROOT = os.environ.get("TAS_VIDEO_ROOT") or _detect_root(
-    ["E:/Video", "E:/videos", "E:/Videos"]
+CONFIG_PATH = os.path.join(HERE, "config.json")
+
+
+def _load_config():
+    """Read config.json (next to server.py) if present. Keys are optional."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"  [config] ignoring {CONFIG_PATH}: {e}")
+        return {}
+
+
+CONFIG = _load_config()
+
+# Precedence for the two roots: env var > config.json > auto-detect.
+VIDEO_ROOT = (
+    os.environ.get("TAS_VIDEO_ROOT")
+    or CONFIG.get("videoSource")
+    or _detect_root(["E:/Video", "E:/videos", "E:/Videos"])
 )
-MODEL_ROOT = os.environ.get("TAS_MODEL_ROOT") or _detect_root(["E:/models", "E:/Models"])
+MODEL_ROOT = (
+    os.environ.get("TAS_MODEL_ROOT")
+    or CONFIG.get("modelSource")
+    or _detect_root(["E:/models", "E:/Models"])
+)
+VIDEO_ROOT = os.path.abspath(VIDEO_ROOT)
+MODEL_ROOT = os.path.abspath(MODEL_ROOT)
 
 # span-directml first = default. TensorRT is listed but note: it fails to build
 # an engine for the FP32 SPAN model on this cu13/TRT11 stack (Conv/Clip node has
