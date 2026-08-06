@@ -71,11 +71,13 @@ MODEL_ROOT = (
 VIDEO_ROOT = os.path.abspath(VIDEO_ROOT)
 MODEL_ROOT = os.path.abspath(MODEL_ROOT)
 
-# span-directml first = default. TensorRT is listed but note: it fails to build
-# an engine for the FP32 SPAN model on this cu13/TRT11 stack (Conv/Clip node has
-# no valid tactic). DirectML runs the .onnx on the NVIDIA GPU via DX12 and works.
+# "span" (bare) = native CUDA path (spandrel-loaded .pth), supports runtime
+# fp16 (.half()) on the Blackwell GPU + CUDA graphs — the fast path, use with a
+# .pth model. "span-directml" runs an .onnx on the GPU via DX12 (fp32 only for
+# our fp32 ONNX). span-tensorrt fails to build an engine for the SPAN model on
+# this cu13/TRT11 stack (Conv/Clip node has no valid tactic).
 UPSCALE_METHODS = [
-    "span-directml", "span-openvino", "span-tensorrt", "span-ncnn",
+    "span", "span-directml", "span-openvino", "span-tensorrt", "span-ncnn",
     "shufflecugan-directml", "shufflecugan-tensorrt",
     "open-proteus-tensorrt", "aniscale2-tensorrt", "rtmosr-tensorrt",
     "adore-tensorrt", "shufflespan-tensorrt",

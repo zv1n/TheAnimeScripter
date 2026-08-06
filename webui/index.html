@@ -157,17 +157,17 @@
     <div class="row">
       <div><label>Precision</label>
         <select id="precision">
-          <option value="fp32">fp32 (custom ONNX)</option>
-          <option value="fp16">fp16 (half)</option>
+          <option value="fp32">fp32 (ONNX / DirectML)</option>
+          <option value="fp16">fp16 (half · CUDA .pth)</option>
         </select></div>
       <div><label>Encoder</label><select id="encode"></select></div>
     </div>
     <label>Output scale</label>
     <input id="scale" type="text" value="1920x1080" placeholder="blank = factor only">
-    <p class="hint" style="margin:8px 0 0">Working combo: <b>span-directml + fp32 + nvenc_h264</b>
-      (h264 nvenc, preset p7 @ CQ 20, archival quality). TensorRT can't build an engine for this SPAN model on the current stack.
-      <b>x265_10bit</b> is the software fallback. <b>h265/HEVC nvenc needs driver 610+</b> and fails
-      silently on this box (595.97) — h264 nvenc works.</p>
+    <p class="hint" style="margin:8px 0 0">Fast path: a <b>.pth</b> SPAN model → <b>span + fp16</b>
+      (native CUDA, tensor cores + CUDA graphs). An <b>.onnx</b> → <b>span-directml + fp32</b> (DX12,
+      no fp16 for our fp32 ONNX). Picking a model auto-sets method + precision. Encoder
+      <b>nvenc_h264</b> (preset p7 @ CQ 20, archival); <b>x265_10bit</b> is the software fallback.</p>
     <button class="btn" id="upBtn">Run upscale</button>
     <div class="progress" id="upProg">
       <div class="pmeta"><span id="upLabel">—</span><b id="upPct">0%</b></div>
@@ -212,9 +212,23 @@ async function refreshVideos(){
 async function refreshModels(){
   const d = await (await fetch('/api/models')).json();
   MODELS = d.models;
-  const el=$('#modelList'); el.innerHTML='';
+  const el=$('#modelList'); const cur=el.value; el.innerHTML='';
   MODELS.forEach(m=>{const o=document.createElement('option');o.value=m.path;
     o.textContent=`${m.name}  (${fmtSize(m.size)})`;el.appendChild(o);});
+  if(cur) el.value=cur;
+  coupleModel();
+}
+// A .pth runs on the native CUDA path (method "span") with fp16 (half) — fast.
+// An .onnx runs via DirectML (span-directml) at fp32. Pick the right pair
+// automatically so the two models don't get mismatched configs.
+function coupleModel(){
+  const p=($('#modelList').value||'').toLowerCase();
+  if(!p) return;
+  if(p.endsWith('.pth')||p.endsWith('.pt')||p.endsWith('.safetensors')){
+    $('#method').value='span'; $('#precision').value='fp16';
+  } else if(p.endsWith('.onnx')){
+    $('#method').value='span-directml'; $('#precision').value='fp32';
+  }
 }
 function renderList(sel, items, filter){
   const el=$(sel); const cur=el.value; el.innerHTML='';
@@ -238,6 +252,7 @@ function renderSrc(){
 $('#rawSearch').oninput=renderRaw; $('#prepSearch').oninput=renderPrepared;
 $('#srcSearch').oninput=renderSrc;
 // Picking a prepared video auto-selects its matching source (X-prepped → X).
+$('#modelList').onchange=coupleModel;
 $('#prepList').onchange=()=>{
   const v=$('#prepList').value; if(!v)return;
   const stem=v.split('/').pop().replace(/-prepped\.mkv$/i,'');
