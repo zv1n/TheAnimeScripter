@@ -594,6 +594,8 @@ def _run_upscale(job, input_path, output, model, method, factor, scale, encode,
         note += f"  Audio/subs from {os.path.basename(audio_source)}."
     job.update({"status": "initializing", "input": input_path, "output": output,
                 "port": port, "progress": 0.0, "audioSource": audio_source or None,
+                "encoder": encode, "method": method,
+                "half": bool(half), "outputScale": scale or None,
                 "note": note})
     try:
         job.proc = subprocess.Popen(

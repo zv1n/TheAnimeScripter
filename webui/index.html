@@ -68,6 +68,7 @@
     font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:120px;overflow:auto}
   .status.run{color:var(--accent)}
   .note{color:var(--warn);font-size:11px;margin-top:6px}
+  .cfgline{font-size:11px;color:var(--dim);margin:4px 0 2px;letter-spacing:.02em;font-variant:small-caps}
   .compare{margin-top:10px;font-size:11px}
   .compare .cmp-h,.compare .cmp-r{display:grid;grid-template-columns:1.5fr 1fr 1fr;
     gap:6px;padding:3px 0;align-items:baseline}
@@ -170,6 +171,7 @@
     <button class="btn" id="upBtn">Run upscale</button>
     <div class="progress" id="upProg">
       <div class="pmeta"><span id="upLabel">—</span><b id="upPct">0%</b></div>
+      <div class="cfgline" id="upConfig"></div>
       <div class="bar"><i id="upBar"></i></div>
       <div class="stats">
         <span>fps <b id="upFps">–</b></span>
@@ -347,6 +349,11 @@ function renderUp(d, output){
   $('#upEta').textContent=fmtTime(d.eta);
   $('#upElapsed').textContent=fmtTime(d.elapsed);
   $('#upFrame').textContent=(d.currentFrame!=null&&d.totalFrames!=null)?`${d.currentFrame}/${d.totalFrames}`:'–';
+  const cfg=[]; if(d.method)cfg.push(d.method);
+  if(d.encoder)cfg.push('⛭ '+d.encoder);
+  if(d.half!=null)cfg.push(d.half?'fp16':'fp32');
+  if(d.outputScale)cfg.push(d.outputScale);
+  $('#upConfig').textContent=cfg.join('  ·  ');
   $('#upNote').textContent=d.note||'';
   if(d.status==='completed'){ $('#upBar').style.width='100%';$('#upPct').textContent='100%';
     $('#upStatus').className='status ok';$('#upStatus').textContent='✓ Done → '+(d.output||output);
