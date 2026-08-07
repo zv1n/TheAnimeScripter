@@ -756,6 +756,15 @@ class WriteBuffer:
         if self.single_image_output:
             command.extend(["-frames:v", "1"])
 
+        if cs.AUDIO or extAudio:
+            # Copying sparse streams (esp. dvd_subtitle) makes the matroska muxer
+            # hold video packets back to interleave them, burying the video codec
+            # params past readers' default probe budget -> ffprobe "unspecified
+            # pixel format" and broken -c copy remuxes. Disable the interleave
+            # delay so video is written promptly. (Video data was always intact;
+            # this is purely a muxer interleaving fix.)
+            command.extend(["-max_interleave_delta", "0"])
+
         command.append(self.output)
 
         return command
